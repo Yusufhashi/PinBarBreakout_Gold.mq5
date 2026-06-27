@@ -23,9 +23,19 @@
 //|     as a real pin bar (long wick alone is no longer enough).      |
 //|   - ScanForNewPinBar() now exits immediately if a signal is       |
 //|     already armed, instead of silently overwriting it.            |
+//|                                                                    |
+//|   v1.02 changes vs v1.01:                                          |
+//|   - OnTick() M15 detection counts all M15 bars that closed since  |
+//|     the last tick via (time delta / period), so "Open prices only" |
+//|     mode on any chart timeframe works correctly without skipping   |
+//|     bars (e.g. 4 M15 bars close per tick when chart is H1).       |
+//|   - gBarsWaited initialised to -1 on arming; the coincident M15   |
+//|     check at H1 bar close increments it to 0, so the full         |
+//|     MaxBarsToWaitBreakout window remains available for real        |
+//|     subsequent breakout bars.                                      |
 //+------------------------------------------------------------------+
 #property copyright "Yusuf"
-#property version   "1.01"
+#property version   "1.02"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -178,7 +188,7 @@ void ScanForNewPinBar()
        gArmed          = true;
        gArmedIsBullish = true;
        gArmedLevel     = highP;
-       gBarsWaited     = 0;
+       gBarsWaited     = -1;
        PrintFormat("Bullish pin bar detected on H1. Arming breakout watch above %.2f", gArmedLevel);
       }
    else if(isBearishPinBar)
@@ -186,15 +196,16 @@ void ScanForNewPinBar()
        gArmed          = true;
        gArmedIsBullish = false;
        gArmedLevel     = lowP;
-       gBarsWaited     = 0;
+       gBarsWaited     = -1;
        PrintFormat("Bearish pin bar detected on H1. Arming breakout watch below %.2f", gArmedLevel);
       }
   }
 
 //+------------------------------------------------------------------+
-//| Check the last CLOSED M15 bar for a breakout of the armed level   |
+//| Check a specific closed M15 bar for a breakout of the armed level |
+//| barIndex 1 = most recent closed bar, 2 = one bar before, etc.    |
 //+------------------------------------------------------------------+
-void CheckBreakoutOnM15()
+void CheckBreakoutOnM15(int barIndex)
   {
    if(!gArmed)
       return;
@@ -202,13 +213,12 @@ void CheckBreakoutOnM15()
    gBarsWaited++;
    if(gBarsWaited > MaxBarsToWaitBreakout)
       {
-       PrintFormat("Armed pin bar expired after %d M15 bars without breakout.", gBarsWaited - 1);
+       PrintFormat("Armed pin bar expired after %d M15 bars without breakout.", MaxBarsToWaitBreakout);
        gArmed = false;
        return;
       }
 
-   // Index 1 = last fully closed M15 bar
-   double closeP = iClose(gSymbol, PERIOD_M15, 1);
+   double closeP = iClose(gSymbol, PERIOD_M15, barIndex);
 
    bool breakoutUp   = gArmedIsBullish  && (closeP > gArmedLevel);
    bool breakoutDown = !gArmedIsBullish && (closeP < gArmedLevel);
@@ -281,12 +291,18 @@ void OnTick()
        ScanForNewPinBar();
       }
 
-   // --- Step 2: Check for a newly closed M15 bar, check breakout ---
+   // --- Step 2: Process all M15 bars that closed since the last tick ---
+   // Dividing the time delta by the period length gives the number of M15
+   // bars that have elapsed. In "Every tick" mode this is always 1. In
+   // "Open prices only" mode on an H1 chart this is 4, catching all bars
+   // that would otherwise be skipped by a simple != guard.
    datetime currentM15BarTime = iTime(gSymbol, PERIOD_M15, 0);
    if(currentM15BarTime != gLastM15BarTime)
       {
+       int barsElapsed = (int)((currentM15BarTime - gLastM15BarTime) / PeriodSeconds(PERIOD_M15));
        gLastM15BarTime = currentM15BarTime;
-       CheckBreakoutOnM15();
+       for(int i = barsElapsed; i >= 1 && gArmed; i--)
+          CheckBreakoutOnM15(i);
       }
   }
 //+------------------------------------------------------------------+
